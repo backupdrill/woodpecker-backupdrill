@@ -1,0 +1,5 @@
+.review/
+.env
+.env.*
+# secrets for woodpecker-cli exec, see README
+secrets.yaml

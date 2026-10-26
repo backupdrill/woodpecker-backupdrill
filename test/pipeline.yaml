@@ -1,0 +1,66 @@
+# The plugin in a real Woodpecker pipeline, with a throwaway Postgres and MinIO
+# as services. Run it locally with woodpecker-cli; see "Testing" in README.md.
+skip_clone: true
+
+# woodpecker-cli exec runs pipelines as manual events.
+when:
+  - event: manual
+
+services:
+  - name: postgres
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD:
+        from_secret: postgres_password
+
+  - name: minio
+    image: cgr.dev/chainguard/minio:latest
+    entrypoint: [/usr/bin/minio, server, /data]
+    environment:
+      MINIO_ROOT_USER:
+        from_secret: minio_user
+      MINIO_ROOT_PASSWORD:
+        from_secret: minio_password
+
+steps:
+  - name: prepare
+    image: postgres:17-alpine
+    environment:
+      PGPASSWORD:
+        from_secret: postgres_password
+    commands:
+      - for i in $(seq 30); do pg_isready -h postgres -U postgres && break; sleep 1; done
+      - psql -h postgres -U postgres -v ON_ERROR_STOP=1 -c "create table todos (id serial primary key, title text); insert into todos (title) select 'task ' || n from generate_series(1, 250) as n;"
+
+  - name: bucket
+    image: cgr.dev/chainguard/minio-client:latest-dev
+    environment:
+      MC_HOST_test:
+        from_secret: mc_host
+    commands:
+      - for i in $(seq 30); do mc mb --ignore-existing test/backups && break; sleep 1; done
+      - mc ls test/backups
+
+  - name: backup
+    image: woodpecker-backupdrill:test
+    settings:
+      database_url:
+        from_secret: database_url
+      project_name: pipeline-test
+      schemas: [public]
+      s3_endpoint: http://minio:9000
+      s3_region: us-east-1
+      s3_bucket: backups
+      s3_access_key_id:
+        from_secret: minio_user
+      s3_secret_access_key:
+        from_secret: minio_password
+
+  - name: check
+    image: cgr.dev/chainguard/minio-client:latest-dev
+    environment:
+      MC_HOST_test:
+        from_secret: mc_host
+    commands:
+      - mc ls --recursive test/backups/backupdrill/pipeline-test/
+      - mc ls --recursive test/backups/backupdrill/pipeline-test/ | grep -q manifest.json
