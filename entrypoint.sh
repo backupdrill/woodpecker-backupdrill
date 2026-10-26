@@ -45,20 +45,19 @@ done
 # servers older than that. An archive needs a pg_restore at least as new as the
 # pg_dump that wrote it, and pg_restore 17 and newer can't restore into
 # PostgreSQL 16 or older, so a newer pg_dump would make the backup impossible to
-# load back onto the version it came from. If the version can't be read, the CLI
-# runs with the newest pg_dump and reports the connection error itself.
-server_major=$(node /opt/backupdrill/server-major.mjs 2>/dev/null || true)
+# load back onto the version it came from. When the version can't be read, the
+# step stops here instead of guessing. For a server newer than every pg_dump
+# here, the CLI gets the newest one and refuses with a version error.
+server_major=$(node /opt/backupdrill/server-major.mjs) || exit 1
 case $server_major in
-  '' | *[!0-9]*) server_major=0 ;;
+  '' | *[!0-9]*) die "unexpected server version: $server_major" ;;
 esac
-if [ "$server_major" -gt 0 ]; then
-  for dir in /usr/libexec/postgresql[0-9]*; do
-    if [ "${dir#/usr/libexec/postgresql}" -ge "$server_major" ]; then
-      export BACKUPDRILL_PG_DUMP="$dir/pg_dump"
-      break
-    fi
-  done
-fi
+for dir in /usr/libexec/postgresql[0-9]*; do
+  if [ "${dir#/usr/libexec/postgresql}" -ge "$server_major" ]; then
+    export BACKUPDRILL_PG_DUMP="$dir/pg_dump"
+    break
+  fi
+done
 
 # Run outside the repository checkout, so the CLI doesn't read a
 # backupdrill.config.json from it.

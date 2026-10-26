@@ -81,7 +81,7 @@ A backup ends up here:
 
 ## PostgreSQL versions
 
-The image has pg_dump 16, 17 and 18. Before the backup, the plugin asks the server for its version and runs the pg_dump of the same major version; PostgreSQL 15 and older get pg_dump 16. A newer pg_dump would also work for the backup, but its dump might not restore onto your server: a dump needs a pg_restore at least as new as the pg_dump that wrote it, and pg_restore 17 and newer can't restore into PostgreSQL 16 or older.
+The image has pg_dump 16, 17 and 18. Before the backup, the plugin asks the server for its version and runs the pg_dump of the same major version; PostgreSQL 15 and older get pg_dump 16. If the version can't be read, the step fails before anything is dumped. A newer pg_dump would also work for the backup, but its dump might not restore onto your server: a dump needs a pg_restore at least as new as the pg_dump that wrote it, and pg_restore 17 and newer can't restore into PostgreSQL 16 or older.
 
 pg_dump 16 dumps servers back to PostgreSQL 9.2, and Supabase runs 15 to 17. `RECOVERY.md` in each snapshot names the pg_restore version the dump needs.
 
@@ -107,9 +107,9 @@ steps:
 
 ## Which CLI version runs
 
-The image has Node.js 24, pg_dump 16 to 18 and backupdrill 2.7.1. The CLI and all of its dependencies are installed from a lockfile when the image is built, so an image tag always runs the same code and nothing is downloaded during a run. The agent only needs to reach your database, your bucket and, if you set `ping_url`, Healthchecks.
+The image has Node.js 24, pg_dump 16 to 18 and backupdrill 2.7.1. The CLI and all of its dependencies are installed from a lockfile when the image is built, so nothing is downloaded during a run. The agent only needs to reach your database, your bucket and, if you set `ping_url`, Healthchecks.
 
-The CLI doesn't call any BackupDrill server, so an image keeps working for as long as your database and bucket do. When the image is rebuilt with a newer CLI it gets a new tag: `:1` moves to it, `:1.0.0` never changes. For a different CLI version right away, run it in your own step with `npx backupdrill@<version> backup`.
+The CLI doesn't call any BackupDrill server, and a new CLI release doesn't change an image you already use. A rebuild with a newer CLI gets a new version tag: `:1` moves to it, `:1.0.0` stays on this build. For a different CLI version right away, run it in your own step with `npx backupdrill@<version> backup`.
 
 ## Secrets
 

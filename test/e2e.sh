@@ -3,7 +3,8 @@
 #   1. for PostgreSQL 15 to 18: the plugin backs up a seeded table into a MinIO
 #      bucket with the matching pg_dump, and the dump restores onto a server of
 #      the same version (pg_restore runs from the image, as a user would);
-#   2. a wrong password fails the step without printing the password;
+#   2. a wrong password stops the step before the CLI starts (the plugin never
+#      guesses the server version) and without printing the password;
 #   3. a missing setting is refused with its name.
 # Everything runs on a Docker network with no route out, so a run that tried to
 # download something would fail. Needs Docker. Removes the containers and the
@@ -141,6 +142,13 @@ status=0
 cat "$log_dir/wrong.log"
 [ "$status" -ne 0 ] || fail "a wrong password should fail the step"
 echo "exit code: $status"
+grep -q "could not read the server version" "$log_dir/wrong.log" ||
+  fail "the version check should have stopped the step"
+# If the version check failed but the CLI still ran, it would dump with a
+# guessed pg_dump. It must not start at all.
+if grep -q "Inspecting database" "$log_dir/wrong.log"; then
+  fail "the CLI ran although the server version was unknown"
+fi
 for secret in "$wrong_password" "$postgres_password" "$minio_password"; do
   if grep -qF "$secret" "$log_dir/wrong.log"; then fail "a secret was printed"; fi
 done

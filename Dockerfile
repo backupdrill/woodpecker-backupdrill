@@ -11,7 +11,7 @@ RUN apk add --no-cache postgresql16-client postgresql17-client postgresql18-clie
 
 # The CLI gets the database password and the bucket keys, so the exact code is
 # fixed at build time: package-lock.json pins backupdrill and every dependency,
-# and an image tag always runs the same code.
+# and a run downloads nothing.
 WORKDIR /opt/backupdrill
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
