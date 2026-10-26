@@ -66,7 +66,6 @@ To back up on a schedule instead, create a cron job in the repository settings a
 | `supabase_storage_endpoint`, `supabase_storage_region`, `supabase_storage_access_key_id`, `supabase_storage_secret_access_key` | none | Set all four to copy Supabase Storage files as well. Create the keys under **Storage > Settings > S3 Access Keys** and pass them with `from_secret`. |
 | `supabase_storage_buckets` | all buckets | Storage buckets to copy, as a list or comma-separated. |
 | `ping_url` | none | A [Healthchecks.io](https://healthchecks.io) ping URL. The CLI pings it when the backup starts, succeeds or fails. |
-| `cli_version` | `2` | backupdrill version to run, such as `2.7.1`. Only version numbers are accepted. |
 
 The settings map one to one onto the CLI's `BACKUPDRILL_*` environment variables. The plugin ignores those variables (and `DATABASE_URL`) if they are set any other way, so only the step's settings decide what gets backed up.
 
@@ -82,16 +81,16 @@ A backup ends up here:
 
 ## PostgreSQL versions
 
-The image ships pg_dump 18, which can dump servers from PostgreSQL 9.2 to 18. That covers every Supabase project today (15 to 17). The CLI compares versions before it dumps and stops with an error if the server is newer than pg_dump.
+The image has pg_dump 16, 17 and 18. Before the backup, the plugin asks the server for its version and runs the pg_dump of the same major version; PostgreSQL 15 and older get pg_dump 16. A newer pg_dump would also work for the backup, but its dump might not restore onto your server: a dump needs a pg_restore at least as new as the pg_dump that wrote it, and pg_restore 17 and newer can't restore into PostgreSQL 16 or older.
 
-A dump made by pg_dump 18 needs pg_restore 18 or newer. `RECOVERY.md` in each snapshot names the version, and `backupdrill restore` checks it before it writes anything.
+pg_dump 16 dumps servers back to PostgreSQL 9.2, and Supabase runs 15 to 17. `RECOVERY.md` in each snapshot names the pg_restore version the dump needs.
 
-If your server is newer than 18, run the CLI in a regular step with a newer client and set `BACKUPDRILL_PG_DUMP` to its path:
+A server newer than 18 stops the CLI with an error. For one of those, run the CLI in a regular step from an image that has Node.js 20 or newer and a pg_dump at least as new as the server, and set `BACKUPDRILL_PG_DUMP` to that pg_dump:
 
 ```yaml
 steps:
   - name: backup-database
-    image: node:24-alpine
+    image: <image with Node.js and a new enough pg_dump>
     environment:
       BACKUPDRILL_DATABASE_URL:
         from_secret: database_url
@@ -101,21 +100,20 @@ steps:
         from_secret: backup_access_key_id
       BACKUPDRILL_S3_SECRET_ACCESS_KEY:
         from_secret: backup_secret_access_key
-      BACKUPDRILL_PG_DUMP: /usr/libexec/postgresql19/pg_dump
+      BACKUPDRILL_PG_DUMP: /path/to/pg_dump
     commands:
-      - apk add --no-cache postgresql19-client
-      - npx --yes backupdrill@2 backup
+      - npx --yes backupdrill@2.7.1 backup
 ```
 
-## How the CLI gets into the image
+## Which CLI version runs
 
-The image holds Node.js 24, pg_dump and a small entrypoint script. The CLI itself is installed from the npm registry at the start of every run, as `backupdrill@2` unless you set `cli_version`. Bug fixes in 2.x reach you without a new image, and a future 3.0 won't change what the plugin runs. The agent needs to reach `registry.npmjs.org`, your database and your bucket.
+The image has Node.js 24, pg_dump 16 to 18 and backupdrill 2.7.1. The CLI and all of its dependencies are installed from a lockfile when the image is built, so an image tag always runs the same code and nothing is downloaded during a run. The agent only needs to reach your database, your bucket and, if you set `ping_url`, Healthchecks.
 
-Set `cli_version` to an exact version such as `2.7.1` if you want every run to use the same code.
+The CLI doesn't call any BackupDrill server, so an image keeps working for as long as your database and bucket do. When the image is rebuilt with a newer CLI it gets a new tag: `:1` moves to it, `:1.0.0` never changes. For a different CLI version right away, run it in your own step with `npx backupdrill@<version> backup`.
 
 ## Secrets
 
-The plugin never prints settings, and the CLI hands the database password to pg_dump through the environment rather than the command line. Woodpecker also masks secret values in the log.
+The entrypoint doesn't echo any setting. The CLI logs the bucket and key path it writes to, but not the connection string or the keys, and it hands the database password to pg_dump through the environment rather than the command line. Woodpecker also masks secret values in the log.
 
 Anyone who can edit the pipeline file can change the other settings as well, for example point `s3_endpoint` at a server they control and receive the dump. Restricting the secrets to this image with the plugins filter doesn't prevent that. Only make the secrets available to branches and events you trust, and keep them away from pull requests (Woodpecker withholds secrets from pull request events by default).
 

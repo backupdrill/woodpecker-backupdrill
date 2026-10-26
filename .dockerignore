@@ -1,3 +1,6 @@
-# Only the entrypoint goes into the image.
+# Only these files go into the image.
 *
 !entrypoint.sh
+!server-major.mjs
+!package.json
+!package-lock.json

@@ -1,8 +1,12 @@
 #!/bin/sh
 # Woodpecker hands the step's settings to the plugin as PLUGIN_* variables.
-# This script maps them onto the BACKUPDRILL_* variables the CLI reads, installs
-# the CLI from npm and runs `backupdrill backup`. It never prints a setting's value.
+# This script maps them onto the BACKUPDRILL_* variables the CLI reads and runs
+# `backupdrill backup`. The CLI and its dependencies were installed from
+# package-lock.json when the image was built, so nothing is downloaded here.
+# The script never prints a setting's value.
 set -eu
+
+cli=/opt/backupdrill/node_modules/.bin/backupdrill
 
 die() {
   echo "woodpecker-backupdrill: $*" >&2
@@ -21,16 +25,6 @@ for name in DATABASE_URL S3_BUCKET S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY; do
   fi
 done
 
-# The CLI is fetched on every run, so fixes in 2.x arrive without rebuilding this
-# image. Only digits and dots are accepted: a tag, URL or git spec would let the
-# pipeline swap in different code that then runs with the database password.
-cli_version=$(setting CLI_VERSION)
-cli_version=${cli_version:-2}
-case $cli_version in
-  *[!0-9.]* | .* | *. | *..*)
-    die "cli_version must be a version number such as 2, 2.7 or 2.7.1, got: $cli_version" ;;
-esac
-
 # Settings are the only configuration. Values the agent or the pipeline set for
 # other steps (DATABASE_URL is a common one, and the CLI falls back to it) must
 # not leak into the backup, and pg_dump has to be the one shipped in this image.
@@ -47,17 +41,30 @@ for name in DATABASE_URL PROJECT_NAME SCHEMAS \
   fi
 done
 
-# Work outside the repository checkout: npm would otherwise pick up an .npmrc or
-# node_modules from it, and the CLI would read a backupdrill.config.json there.
-workdir=$(mktemp -d)
-cd "$workdir"
-export npm_config_cache="$workdir/.npm" npm_config_update_notifier=false
+# Use the pg_dump of the server's major version, or the oldest one here for
+# servers older than that. An archive needs a pg_restore at least as new as the
+# pg_dump that wrote it, and pg_restore 17 and newer can't restore into
+# PostgreSQL 16 or older, so a newer pg_dump would make the backup impossible to
+# load back onto the version it came from. If the version can't be read, the CLI
+# runs with the newest pg_dump and reports the connection error itself.
+server_major=$(node /opt/backupdrill/server-major.mjs 2>/dev/null || true)
+case $server_major in
+  '' | *[!0-9]*) server_major=0 ;;
+esac
+if [ "$server_major" -gt 0 ]; then
+  for dir in /usr/libexec/postgresql[0-9]*; do
+    if [ "${dir#/usr/libexec/postgresql}" -ge "$server_major" ]; then
+      export BACKUPDRILL_PG_DUMP="$dir/pg_dump"
+      break
+    fi
+  done
+fi
 
-echo "▶  Install backupdrill@$cli_version"
-npm install --prefix "$workdir" --no-audit --no-fund --ignore-scripts "backupdrill@$cli_version"
-cli="$workdir/node_modules/.bin/backupdrill"
+# Run outside the repository checkout, so the CLI doesn't read a
+# backupdrill.config.json from it.
+cd "$(mktemp -d)"
 
-echo "▶  backupdrill $("$cli" --version) backup"
+echo "▶  backupdrill $("$cli" --version) backup, $("${BACKUPDRILL_PG_DUMP:-pg_dump}" --version)"
 # Progress goes to stderr. stdout carries the whole manifest as one JSON line,
 # which for a project with Storage files lists every file; the same manifest is
 # already in the bucket next to the dump.

@@ -1,0 +1,9 @@
+{
+  "name": "woodpecker-backupdrill-cli",
+  "private": true,
+  "description": "The backupdrill CLI version this image runs. package-lock.json pins every dependency.",
+  "dependencies": {
+    "backupdrill": "2.7.1",
+    "pg": "8.23.1"
+  }
+}

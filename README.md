@@ -21,13 +21,15 @@ All settings, the PostgreSQL version notes and what to know about secrets are in
 
 ## How it works
 
-The image is `node:24-alpine3.24` with the PostgreSQL 18 client and [entrypoint.sh](entrypoint.sh). On each run the entrypoint turns the step's settings into the environment variables of [the backupdrill CLI](https://backupdrill.com/docs/cli), installs `backupdrill@2` from npm (or the version in `cli_version`) and runs `backupdrill backup`. The CLI does the actual work: it checks pg_dump against the server version, streams the dump to the bucket and writes the manifest last.
+The image is `node:24-alpine3.24` with the PostgreSQL 16, 17 and 18 clients, [the backupdrill CLI](https://backupdrill.com/docs/cli) and [entrypoint.sh](entrypoint.sh). The CLI version and every dependency are pinned in [package-lock.json](package-lock.json) and installed with `npm ci` at build time, so a run downloads nothing.
 
-Because the CLI is fetched at run time, CLI fixes don't need a new image. The image only has to be rebuilt for a newer pg_dump or Node.js.
+The entrypoint turns the step's settings into the CLI's environment variables, asks the server for its major version ([server-major.mjs](server-major.mjs), using the CLI's own connection settings) and points the CLI at the pg_dump of that version, so the dump can be restored onto the same version. Then it runs `backupdrill backup`, which streams the dump to the bucket and writes the manifest last.
+
+The CLI doesn't depend on any BackupDrill server, so an image keeps working when newer CLI versions come out. Rebuild when you want a newer CLI, when a server moves past PostgreSQL 18, or before Node.js 24 reaches end of life in April 2028.
 
 ## Testing
 
-Both tests use a throwaway Postgres 17 and MinIO in Docker and clean up after themselves.
+Both tests use throwaway Postgres and MinIO containers and clean up after themselves.
 
 ```sh
 docker build -t woodpecker-backupdrill:test .
@@ -39,11 +41,18 @@ IMAGE=woodpecker-backupdrill:test test/e2e.sh
 woodpecker-cli exec --secrets-file secrets.yaml test/pipeline.yaml
 ```
 
-`test/e2e.sh` backs up a seeded table and checks the dump in the bucket, then checks that a wrong password fails the step without showing up in the log, and that a missing setting or a `cli_version` like `latest` is refused.
+`test/e2e.sh` runs on a Docker network with no internet access. For PostgreSQL 15, 16, 17 and 18 it backs up a seeded table, checks which pg_dump ran, and restores the dump from the bucket onto a server of the same version. Then it checks that a wrong password fails the step without showing up in the log, and that a missing setting is refused.
 
 For `woodpecker-cli exec`, `secrets.yaml` needs `postgres_password`, `minio_user`, `minio_password`, `mc_host` (`http://<minio_user>:<minio_password>@minio:9000`) and `database_url` (`postgresql://postgres:<postgres_password>@postgres:5432/postgres`). Keep that file out of the repository.
 
 ## Releasing
+
+To move to another CLI version, update the lockfile with the same npm the image uses, then build and run the tests:
+
+```sh
+docker run --rm -v "$PWD:/w" -w /w node:24-alpine3.24 \
+  npm install --package-lock-only --ignore-scripts --save-exact backupdrill@<version>
+```
 
 Push a tag such as `v1.0.1`. The release workflow builds the image for linux/amd64 and linux/arm64 and pushes it to `ghcr.io/backupdrill/woodpecker-backupdrill` as `1.0.1`, `1` and `latest`.
 
