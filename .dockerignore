@@ -2,5 +2,6 @@
 *
 !entrypoint.sh
 !server-major.mjs
+!no-pg-dump
 !package.json
 !package-lock.json

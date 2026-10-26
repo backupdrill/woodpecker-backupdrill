@@ -3,9 +3,11 @@
 #   1. for PostgreSQL 15 to 18: the plugin backs up a seeded table into a MinIO
 #      bucket with the matching pg_dump, and the dump restores onto a server of
 #      the same version (pg_restore runs from the image, as a user would);
-#   2. a wrong password stops the step before the CLI starts (the plugin never
-#      guesses the server version) and without printing the password;
-#   3. a missing setting is refused with its name.
+#   2. a wrong password fails the step without printing the password, and the
+#      ping_url gets its start and fail pings;
+#   3. when the server version is unknown, the CLI dumps nothing even though
+#      the database is reachable (the plugin never guesses a pg_dump);
+#   4. a missing setting is refused with its name.
 # Everything runs on a Docker network with no route out, so a run that tried to
 # download something would fail. Needs Docker. Removes the containers and the
 # network it creates; the image under test is left alone.
@@ -24,6 +26,7 @@ run_id=wpbd-e2e-$$
 network=$run_id
 postgres=$run_id-postgres
 minio=$run_id-minio
+pings=$run_id-pings
 log_dir=$(mktemp -d)
 
 random() { od -An -N12 -tx1 /dev/urandom | tr -d ' \n'; }
@@ -32,7 +35,7 @@ minio_user=e2e$(random)
 minio_password=$(random)
 
 cleanup() {
-  docker rm -f "$postgres" "$minio" >/dev/null 2>&1 || true
+  docker rm -f "$postgres" "$minio" "$pings" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
   rm -rf "$log_dir"
 }
@@ -132,29 +135,52 @@ for version in $postgres_versions; do
   echo "ok: PostgreSQL $version backed up with pg_dump $expected_major and restored with all 250 rows"
 done
 
-echo "== 2. wrong password"
+echo "== 2. wrong password, with ping_url"
+# A stand-in for Healthchecks that logs each request it gets.
+docker run -d --name "$pings" --network "$network" --entrypoint node "$image" -e "
+  require('http').createServer((req, res) => { console.log(req.method, req.url); res.end('OK'); }).listen(8000);
+" >/dev/null
+retry docker exec "$pings" node -e "fetch('http://127.0.0.1:8000/ready').then(() => {}, () => process.exit(1))"
 wrong_password=wrong$(random)
 status=0
 (
   export PLUGIN_DATABASE_URL="postgresql://postgres:$wrong_password@$postgres:5432/postgres"
-  run_plugin
+  export PLUGIN_PING_URL="http://$pings:8000/ping"
+  docker run --rm --network "$network" -e PLUGIN_DATABASE_URL -e PLUGIN_PING_URL \
+    -e PLUGIN_S3_ENDPOINT -e PLUGIN_S3_REGION -e PLUGIN_S3_BUCKET \
+    -e PLUGIN_S3_ACCESS_KEY_ID -e PLUGIN_S3_SECRET_ACCESS_KEY "$image"
 ) >"$log_dir/wrong.log" 2>&1 || status=$?
 cat "$log_dir/wrong.log"
 [ "$status" -ne 0 ] || fail "a wrong password should fail the step"
 echo "exit code: $status"
-grep -q "could not read the server version" "$log_dir/wrong.log" ||
-  fail "the version check should have stopped the step"
-# If the version check failed but the CLI still ran, it would dump with a
-# guessed pg_dump. It must not start at all.
-if grep -q "Inspecting database" "$log_dir/wrong.log"; then
-  fail "the CLI ran although the server version was unknown"
-fi
 for secret in "$wrong_password" "$postgres_password" "$minio_password"; do
   if grep -qF "$secret" "$log_dir/wrong.log"; then fail "a secret was printed"; fi
 done
-echo "ok: failed without printing a secret"
+docker logs "$pings" >"$log_dir/pings.log" 2>&1
+grep -q "^POST /ping/start" "$log_dir/pings.log" || fail "no start ping"
+grep -q "^POST /ping/fail" "$log_dir/pings.log" || fail "no fail ping"
+echo "ok: failed without printing a secret, and pinged start and fail"
 
-echo "== 3. missing setting"
+echo "== 3. unknown server version"
+# The entrypoint hands the CLI no-pg-dump when it can't read the version. Run
+# the CLI that way against a database it can reach: it has to stop before
+# writing anything to the bucket.
+status=0
+docker run --rm --network "$network" --entrypoint /opt/backupdrill/node_modules/.bin/backupdrill \
+  -e BACKUPDRILL_DATABASE_URL="$PLUGIN_DATABASE_URL" -e BACKUPDRILL_PROJECT_NAME=unknown-version \
+  -e BACKUPDRILL_S3_ENDPOINT="$PLUGIN_S3_ENDPOINT" -e BACKUPDRILL_S3_REGION="$PLUGIN_S3_REGION" \
+  -e BACKUPDRILL_S3_BUCKET="$PLUGIN_S3_BUCKET" -e BACKUPDRILL_S3_ACCESS_KEY_ID="$minio_user" \
+  -e BACKUPDRILL_S3_SECRET_ACCESS_KEY="$minio_password" \
+  -e BACKUPDRILL_PG_DUMP=/opt/backupdrill/no-pg-dump "$image" backup >"$log_dir/unknown.log" 2>&1 || status=$?
+cat "$log_dir/unknown.log"
+[ "$status" -ne 0 ] || fail "the backup should fail without a picked pg_dump"
+grep -q "picked no pg_dump" "$log_dir/unknown.log" || fail "unclear message"
+if [ -n "$(mc ls --recursive e2e/backups/backupdrill/unknown-version/ 2>/dev/null)" ]; then
+  fail "something was written to the bucket"
+fi
+echo "ok: nothing dumped without a picked pg_dump"
+
+echo "== 4. missing setting"
 # A subshell, so the emptied setting doesn't outlive the check.
 (export PLUGIN_DATABASE_URL=; run_plugin) >"$log_dir/missing.log" 2>&1 &&
   fail "a missing database_url should fail"

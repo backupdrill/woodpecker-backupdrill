@@ -16,6 +16,7 @@ WORKDIR /opt/backupdrill
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
 COPY server-major.mjs ./
+COPY --chmod=755 no-pg-dump ./
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/woodpecker-backupdrill
 

@@ -1,7 +1,7 @@
 // Prints the database server's major version so the entrypoint can pick the
 // pg_dump of that major. It connects with the CLI's own connection settings
 // (pgConnectOptions verifies Supabase's certificate). On failure it prints the
-// error message and exits non-zero, and the entrypoint stops the step.
+// error message and exits non-zero.
 import pg from "pg";
 import { assertNoHostOverride, pgConnectOptions } from "backupdrill";
 
@@ -10,12 +10,14 @@ async function serverMajor(url) {
   const client = new pg.Client({ ...pgConnectOptions(url), connectionTimeoutMillis: 30000 });
   // Without a listener, a dropped connection would surface as an uncaught exception.
   client.on("error", () => {});
-  await client.connect();
   try {
+    await client.connect();
     const { rows } = await client.query("show server_version_num");
     return Math.floor(Number(rows[0].server_version_num) / 10000);
   } finally {
-    await client.end();
+    // Also after a failed connect: its socket would keep Node running until the
+    // server hangs up.
+    await client.end().catch(() => {});
   }
 }
 

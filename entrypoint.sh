@@ -41,29 +41,37 @@ for name in DATABASE_URL PROJECT_NAME SCHEMAS \
   fi
 done
 
+echo "▶  backupdrill $("$cli" --version) backup"
+
 # Use the pg_dump of the server's major version, or the oldest one here for
 # servers older than that. An archive needs a pg_restore at least as new as the
 # pg_dump that wrote it, and pg_restore 17 and newer can't restore into
 # PostgreSQL 16 or older, so a newer pg_dump would make the backup impossible to
 # load back onto the version it came from. When the version can't be read, the
-# step stops here instead of guessing. For a server newer than every pg_dump
-# here, the CLI gets the newest one and refuses with a version error.
-server_major=$(node /opt/backupdrill/server-major.mjs) || exit 1
+# CLI still runs, so the failure is reported the usual way (log and ping_url),
+# but with a pg_dump that refuses to run: the plugin never guesses. For a server
+# newer than every pg_dump here, the CLI gets the newest one and refuses with a
+# version error.
+server_major=$(node /opt/backupdrill/server-major.mjs) || server_major=
 case $server_major in
-  '' | *[!0-9]*) die "unexpected server version: $server_major" ;;
+  '' | *[!0-9]*)
+    export BACKUPDRILL_PG_DUMP=/opt/backupdrill/no-pg-dump
+    ;;
+  *)
+    for dir in /usr/libexec/postgresql[0-9]*; do
+      if [ "${dir#/usr/libexec/postgresql}" -ge "$server_major" ]; then
+        export BACKUPDRILL_PG_DUMP="$dir/pg_dump"
+        echo "PostgreSQL $server_major server, using $("$BACKUPDRILL_PG_DUMP" --version)"
+        break
+      fi
+    done
+    ;;
 esac
-for dir in /usr/libexec/postgresql[0-9]*; do
-  if [ "${dir#/usr/libexec/postgresql}" -ge "$server_major" ]; then
-    export BACKUPDRILL_PG_DUMP="$dir/pg_dump"
-    break
-  fi
-done
 
 # Run outside the repository checkout, so the CLI doesn't read a
 # backupdrill.config.json from it.
 cd "$(mktemp -d)"
 
-echo "▶  backupdrill $("$cli" --version) backup, $("${BACKUPDRILL_PG_DUMP:-pg_dump}" --version)"
 # Progress goes to stderr. stdout carries the whole manifest as one JSON line,
 # which for a project with Storage files lists every file; the same manifest is
 # already in the bucket next to the dump.

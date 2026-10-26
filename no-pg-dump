@@ -1,0 +1,6 @@
+#!/bin/sh
+# Given to the CLI as pg_dump when the entrypoint couldn't read the server
+# version. The CLI runs it with --version after connecting and before dumping,
+# so the backup stops there, reported like any other failure (log and ping_url).
+echo "the server version could not be read before the backup, so the plugin picked no pg_dump" >&2
+exit 1
